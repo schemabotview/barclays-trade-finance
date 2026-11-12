@@ -5,6 +5,9 @@
 #
 # Azure login is OIDC: no secret is stored. The SP sp-cicd-lcexp trusts two subjects only,
 # `pull_request` and `environment:dev` of this repo. Fork PRs get no OIDC token, so they cannot plan.
+# azurerm uses the OIDC token directly; Databricks goes through `az` (azure/login, also OIDC), because
+# only azure-cli auth sends the ARM management token that UC needs to create a storage credential as
+# an SP (github-oidc-azure does not).
 # The plan file is never uploaded: it embeds state, and artifacts in a public repo are public.
 
 name: terraform
@@ -31,6 +34,7 @@ env:
   ARM_TENANT_ID: ${{ vars.AZURE_TENANT_ID }}
   ARM_SUBSCRIPTION_ID: ${{ vars.AZURE_SUBSCRIPTION_ID }}
   ARM_USE_OIDC: "true"
+  DATABRICKS_AUTH_TYPE: azure-cli
   TF_IN_AUTOMATION: "true"
   TF_INPUT: "0"
   TF_DIR: infra/envs/dev
@@ -42,6 +46,12 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+
+      - uses: azure/login@v2
+        with:
+          client-id: ${{ vars.AZURE_CLIENT_ID }}
+          tenant-id: ${{ vars.AZURE_TENANT_ID }}
+          subscription-id: ${{ vars.AZURE_SUBSCRIPTION_ID }}
 
       - uses: hashicorp/setup-terraform@v3
         with:
@@ -95,6 +105,12 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      - uses: azure/login@v2
+        with:
+          client-id: ${{ vars.AZURE_CLIENT_ID }}
+          tenant-id: ${{ vars.AZURE_TENANT_ID }}
+          subscription-id: ${{ vars.AZURE_SUBSCRIPTION_ID }}
+
       - uses: hashicorp/setup-terraform@v3
         with:
           terraform_version: 1.15.5
@@ -126,6 +142,5 @@ jobs:
         run: |
           curl -fsSL https://raw.githubusercontent.com/databricks/setup-cli/main/install.sh | sh
           export DATABRICKS_HOST=$(terraform -chdir=$TF_DIR output -raw databricks_url)
-          export DATABRICKS_AUTH_TYPE=github-oidc-azure
           databricks bundle validate -t dev
           databricks bundle deploy -t dev

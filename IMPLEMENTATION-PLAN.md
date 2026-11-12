@@ -77,8 +77,9 @@ tests/            pytest + local Spark fixtures
 | merge to `main` | `apply dev` job (environment `dev`): plan, then `apply` of that plan in the same job | dev |
 | (later) after dev | `test`, `prod` jobs on environments with required reviewers | test, prod |
 
-- Auth: OIDC, no `azure/login` step: Terraform (`ARM_USE_OIDC`) and the Databricks provider/CLI
-  (`github-oidc-azure`) exchange the GitHub token directly. No client secret exists.
+- Auth: OIDC, no client secret exists. azurerm (`ARM_USE_OIDC`) exchanges the GitHub token directly;
+  `azure/login` (also OIDC) logs `az` in, and the Databricks provider/CLI use `azure-cli` auth: only it
+  sends the ARM management token UC needs to create a storage credential as an SP.
 - The SP trusts only `repo:…:pull_request` and `repo:…:environment:dev`. Fork PRs get no OIDC token.
 - `main` is protected: PR required, the `plan` check must pass; environment `dev` deploys only from
   protected branches.
