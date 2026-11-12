@@ -78,7 +78,16 @@ Checkout → Lint + pytest → terraform fmt/validate
   → [approve] → plan/apply/deploy (prod)
 ```
 
-- PR builds stop after `plan`, which is posted for review.
+| event | Jenkins runs | Azure changes |
+|---|---|---|
+| push to a PR | tests, fmt/validate, `plan` dev (artifact `plan-dev.txt`) | none |
+| merge to `main` | same, then `apply` of that saved plan, bundle deploy | dev |
+| (later) after dev | `plan` test → `input` approval → `apply`; same for prod | test, prod |
+
+- Job type: **Multibranch Pipeline**, GitHub branch source, discovers `main` + PRs; fork PRs not built
+  (they would run Terraform with the SP's credentials).
+- Trigger: GitHub webhook → Jenkins (via a relay while Jenkins is on localhost); periodic scan as fallback.
+- `main` is protected: PR required, Jenkins status check must pass, no direct pushes.
 - Credentials: Jenkins credential `azure-sp-lcexp`, injected as `ARM_CLIENT_ID`, `ARM_CLIENT_SECRET`,
   `ARM_TENANT_ID`, `ARM_SUBSCRIPTION_ID`; the Databricks provider and CLI authenticate with the same SP.
 - Agent: the local Jenkins node; `terraform`, `databricks`, `az`, Python 3 must be on Jenkins' `PATH`

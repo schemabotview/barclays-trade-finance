@@ -1,8 +1,24 @@
-// LC exposure: test → Terraform plan → (approve) apply → Databricks bundle deploy.
+// LC exposure CI/CD (Multibranch Pipeline, GitHub branch source).
+//
+//   pull request → tests, fmt/validate, plan dev           (nothing changes in Azure)
+//   merge to main → tests, fmt/validate, plan dev → apply dev → bundle deploy dev
+//   test / prod   → same stages behind an `input` approval, once those envs exist
+//
 // Credential `azure-sp-lcexp` is the Azure Service Principal for sp-jenkins-lcexp.
 
 def tf(String envName, String args) {
   sh "terraform -chdir=infra/envs/${envName} ${args}"
+}
+
+def withAzure(Closure body) {
+  withCredentials([azureServicePrincipal(
+      credentialsId: 'azure-sp-lcexp',
+      subscriptionIdVariable: 'ARM_SUBSCRIPTION_ID',
+      clientIdVariable: 'ARM_CLIENT_ID',
+      clientSecretVariable: 'ARM_CLIENT_SECRET',
+      tenantIdVariable: 'ARM_TENANT_ID')]) {
+    body()
+  }
 }
 
 pipeline {
@@ -11,18 +27,14 @@ pipeline {
   options {
     timestamps()
     ansiColor('xterm')
-    disableConcurrentBuilds()   // one state lock, one 4-vCPU cluster
+    disableConcurrentBuilds()   // per branch; across branches the state lock serialises
     buildDiscarder(logRotator(numToKeepStr: '20'))
   }
 
-  parameters {
-    booleanParam(name: 'APPLY', defaultValue: false, description: 'Apply to dev after the plan (main branch only)')
-  }
-
   environment {
-    PATH         = "/opt/homebrew/bin:${env.PATH}"
+    PATH             = "/opt/homebrew/bin:${env.PATH}"
     TF_IN_AUTOMATION = 'true'
-    TF_INPUT     = '0'
+    TF_INPUT         = '0'
   }
 
   stages {
@@ -48,54 +60,39 @@ pipeline {
     }
 
     stage('Plan dev') {
+      when { anyOf { changeRequest(); branch 'main' } }
       steps {
-        withCredentials([azureServicePrincipal(
-            credentialsId: 'azure-sp-lcexp',
-            subscriptionIdVariable: 'ARM_SUBSCRIPTION_ID',
-            clientIdVariable: 'ARM_CLIENT_ID',
-            clientSecretVariable: 'ARM_CLIENT_SECRET',
-            tenantIdVariable: 'ARM_TENANT_ID')]) {
+        withAzure {
           tf('dev', 'init -reconfigure')
-          tf('dev', 'plan -out=tfplan')
+          // -detailed-exitcode: 0 = no changes, 2 = changes, 1 = error
+          script {
+            def rc = sh(returnStatus: true,
+                        script: 'terraform -chdir=infra/envs/dev plan -lock-timeout=10m -detailed-exitcode -out=tfplan')
+            if (rc == 1) { error 'terraform plan failed' }
+            env.DEV_HAS_CHANGES = (rc == 2) ? 'true' : 'false'
+          }
           tf('dev', 'show -no-color tfplan > plan-dev.txt')
         }
         archiveArtifacts artifacts: 'infra/envs/dev/plan-dev.txt'
-      }
-    }
-
-    stage('Approve dev') {
-      when { allOf { expression { params.APPLY }; expression { (env.BRANCH_NAME ?: 'main') == 'main' } } }
-      steps {
-        timeout(time: 30, unit: 'MINUTES') {
-          input message: 'Apply plan-dev.txt to dev?', ok: 'Apply'
+        script {
+          currentBuild.description = env.DEV_HAS_CHANGES == 'true' ? 'dev: changes planned' : 'dev: no changes'
         }
       }
     }
 
+    // Applies the exact plan reviewed above; a merge to main is the approval for dev.
     stage('Apply dev') {
-      when { allOf { expression { params.APPLY }; expression { (env.BRANCH_NAME ?: 'main') == 'main' } } }
+      when { allOf { branch 'main'; expression { env.DEV_HAS_CHANGES == 'true' } } }
       steps {
-        withCredentials([azureServicePrincipal(
-            credentialsId: 'azure-sp-lcexp',
-            subscriptionIdVariable: 'ARM_SUBSCRIPTION_ID',
-            clientIdVariable: 'ARM_CLIENT_ID',
-            clientSecretVariable: 'ARM_CLIENT_SECRET',
-            tenantIdVariable: 'ARM_TENANT_ID')]) {
-          tf('dev', 'apply tfplan')
-        }
+        withAzure { tf('dev', 'apply -lock-timeout=10m tfplan') }
       }
     }
 
     // Jobs ship as a Databricks Asset Bundle (phase 3+). Skipped until databricks.yml exists.
     stage('Deploy bundle dev') {
-      when { allOf { expression { params.APPLY }; expression { fileExists('databricks.yml') } } }
+      when { allOf { branch 'main'; expression { fileExists('databricks.yml') } } }
       steps {
-        withCredentials([azureServicePrincipal(
-            credentialsId: 'azure-sp-lcexp',
-            subscriptionIdVariable: 'ARM_SUBSCRIPTION_ID',
-            clientIdVariable: 'ARM_CLIENT_ID',
-            clientSecretVariable: 'ARM_CLIENT_SECRET',
-            tenantIdVariable: 'ARM_TENANT_ID')]) {
+        withAzure {
           sh '''
             export DATABRICKS_HOST=$(terraform -chdir=infra/envs/dev output -raw databricks_url)
             export DATABRICKS_AUTH_TYPE=azure-client-secret
@@ -109,8 +106,9 @@ pipeline {
       }
     }
 
-    // test / prod: add infra/envs/{test,prod} and copy the Plan → Approve → Apply stages
-    // once the vCPU quota allows a second cluster.
+    // test / prod (once infra/envs/{test,prod} exist and the vCPU quota allows):
+    //   stage('Plan test') → stage('Approve test') { input … } → stage('Apply test'), then prod,
+    //   each `when { branch 'main' }`; prod uses its own SP credential.
   }
 
   post {
