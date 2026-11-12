@@ -41,14 +41,31 @@ module "keyvault" {
   tags                = local.tags
 }
 
+module "postgres" {
+  source               = "../../modules/postgres"
+  name                 = "psql-${local.prefix}-${random_string.suffix.result}"
+  resource_group_name  = data.azurerm_resource_group.this.name
+  location             = var.location
+  database             = "tradebook"
+  admin_login          = "tradebook_admin"
+  key_vault_id         = module.keyvault.id
+  password_secret_name = "pg-tradebook-password"
+  tags                 = local.tags
+  depends_on           = [time_sleep.rbac] # writes a Key Vault secret
+}
+
 module "adf" {
-  source              = "../../modules/adf"
-  name                = "adf-${local.prefix}-uks"
-  resource_group_name = data.azurerm_resource_group.this.name
-  location            = var.location
-  adls_dfs_endpoint   = module.adls.dfs_endpoint
-  key_vault_id        = module.keyvault.id
-  tags                = local.tags
+  source                   = "../../modules/adf"
+  name                     = "adf-${local.prefix}-uks"
+  resource_group_name      = data.azurerm_resource_group.this.name
+  location                 = var.location
+  adls_dfs_endpoint        = module.adls.dfs_endpoint
+  key_vault_id             = module.keyvault.id
+  postgres_fqdn            = module.postgres.fqdn
+  postgres_database        = module.postgres.database
+  postgres_user            = module.postgres.admin_login
+  postgres_password_secret = module.postgres.password_secret_name
+  tags                     = local.tags
 }
 
 module "databricks" {
@@ -84,6 +101,13 @@ resource "azurerm_role_assignment" "adf_adls" {
   principal_type       = "ServicePrincipal"
 }
 
+# Whoever runs Terraform (sp-cicd-lcexp in CI) writes the PostgreSQL password into Key Vault.
+resource "azurerm_role_assignment" "runner_kv" {
+  scope                = module.keyvault.id
+  role_definition_name = "Key Vault Secrets Officer"
+  principal_id         = data.azurerm_client_config.current.object_id
+}
+
 resource "azurerm_role_assignment" "adf_kv" {
   scope                = module.keyvault.id
   role_definition_name = "Key Vault Secrets User"
@@ -91,12 +115,14 @@ resource "azurerm_role_assignment" "adf_kv" {
   principal_type       = "ServicePrincipal"
 }
 
-# RBAC takes a minute to reach the data plane; UC validates the location on create.
+# RBAC takes a minute to reach the data plane; UC validates the location on create, and the
+# PostgreSQL module writes a Key Vault secret.
 resource "time_sleep" "rbac" {
   create_duration = "90s"
   triggers = {
     uc_adls      = azurerm_role_assignment.uc_adls.id
     uc_connector = azurerm_role_assignment.uc_connector.id
+    runner_kv    = azurerm_role_assignment.runner_kv.id
   }
 }
 
