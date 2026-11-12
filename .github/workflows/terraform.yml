@@ -1,0 +1,131 @@
+# LC exposure infra CI/CD.
+#
+#   pull request → fmt, validate, plan dev, plan posted as a PR comment  (nothing changes in Azure)
+#   merge to main → fmt, validate, plan dev, apply that plan             (environment `dev`)
+#
+# Azure login is OIDC: no secret is stored. The SP sp-cicd-lcexp trusts two subjects only,
+# `pull_request` and `environment:dev` of this repo. Fork PRs get no OIDC token, so they cannot plan.
+# The plan file is never uploaded: it embeds state, and artifacts in a public repo are public.
+
+name: terraform
+
+on:
+  pull_request:
+    branches: [main]
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  id-token: write
+  pull-requests: write
+
+# One run at a time against the dev state; never cancel an apply halfway.
+concurrency:
+  group: terraform-dev
+  cancel-in-progress: false
+
+env:
+  ARM_CLIENT_ID: ${{ vars.AZURE_CLIENT_ID }}
+  ARM_TENANT_ID: ${{ vars.AZURE_TENANT_ID }}
+  ARM_SUBSCRIPTION_ID: ${{ vars.AZURE_SUBSCRIPTION_ID }}
+  ARM_USE_OIDC: "true"
+  TF_IN_AUTOMATION: "true"
+  TF_INPUT: "0"
+  TF_DIR: infra/envs/dev
+
+jobs:
+  plan:
+    if: github.event_name == 'pull_request'
+    name: plan
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: 1.15.5
+          terraform_wrapper: false
+
+      - name: fmt
+        run: terraform fmt -check -recursive infra
+
+      - name: init + validate
+        run: |
+          terraform -chdir=$TF_DIR init
+          terraform -chdir=$TF_DIR validate
+
+      - name: plan
+        id: plan
+        run: |
+          set +e
+          terraform -chdir=$TF_DIR plan -lock-timeout=10m -detailed-exitcode -no-color -out=tfplan
+          rc=$?
+          set -e
+          [ $rc -eq 1 ] && exit 1
+          terraform -chdir=$TF_DIR show -no-color tfplan > plan.txt
+          echo "summary=$(grep -E '^(Plan:|No changes)' plan.txt || echo 'No changes.')" >> "$GITHUB_OUTPUT"
+
+      - name: comment plan on the PR
+        uses: actions/github-script@v7
+        env:
+          SUMMARY: ${{ steps.plan.outputs.summary }}
+        with:
+          script: |
+            const fs = require('fs');
+            let plan = fs.readFileSync('plan.txt', 'utf8');
+            if (plan.length > 60000) plan = plan.slice(0, 60000) + '\n… (truncated: see the job log)';
+            const marker = '<!-- terraform-plan-dev -->';
+            const body = `${marker}\n### Terraform plan: dev\n**${process.env.SUMMARY}**\n\n` +
+              `<details><summary>Show plan</summary>\n\n\`\`\`\n${plan}\n\`\`\`\n</details>\n\n` +
+              `_Commit ${context.sha.slice(0, 7)}. Merging applies this to dev._`;
+            const { owner, repo } = context.repo;
+            const issue_number = context.issue.number;
+            const comments = await github.paginate(github.rest.issues.listComments, { owner, repo, issue_number });
+            const old = comments.find(c => c.body.includes(marker));
+            if (old) await github.rest.issues.updateComment({ owner, repo, comment_id: old.id, body });
+            else await github.rest.issues.createComment({ owner, repo, issue_number, body });
+
+  apply:
+    if: github.ref == 'refs/heads/main' && github.event_name != 'pull_request'
+    name: apply dev
+    runs-on: ubuntu-latest
+    environment: dev
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: 1.15.5
+          terraform_wrapper: false
+
+      - name: init + validate
+        run: |
+          terraform -chdir=$TF_DIR init
+          terraform -chdir=$TF_DIR validate
+
+      - name: plan
+        id: plan
+        run: |
+          set +e
+          terraform -chdir=$TF_DIR plan -lock-timeout=10m -detailed-exitcode -no-color -out=tfplan
+          rc=$?
+          set -e
+          [ $rc -eq 1 ] && exit 1
+          echo "changes=$([ $rc -eq 2 ] && echo true || echo false)" >> "$GITHUB_OUTPUT"
+
+      # Applies the plan made two steps up, in the same job, so nothing can change in between.
+      - name: apply
+        if: steps.plan.outputs.changes == 'true'
+        run: terraform -chdir=$TF_DIR apply -lock-timeout=10m -no-color tfplan
+
+      # Jobs ship as a Databricks Asset Bundle (phase 3+); skipped until databricks.yml exists.
+      - name: bundle deploy
+        if: hashFiles('databricks.yml') != ''
+        run: |
+          curl -fsSL https://raw.githubusercontent.com/databricks/setup-cli/main/install.sh | sh
+          export DATABRICKS_HOST=$(terraform -chdir=$TF_DIR output -raw databricks_url)
+          export DATABRICKS_AUTH_TYPE=github-oidc-azure
+          databricks bundle validate -t dev
+          databricks bundle deploy -t dev
