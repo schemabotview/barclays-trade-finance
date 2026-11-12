@@ -11,7 +11,7 @@ locals {
 
 data "azurerm_client_config" "current" {}
 
-# Created in bootstrap; the Jenkins SP is scoped to it and cannot create resource groups.
+# Created in bootstrap; the CI/CD SP is scoped to it and cannot create resource groups.
 data "azurerm_resource_group" "this" {
   name = "rg-${local.prefix}-uks"
 }
@@ -60,7 +60,7 @@ module "databricks" {
   tags                  = local.tags
 }
 
-# --- Role assignments (the Jenkins SP holds Role Based Access Control Administrator on the RG)
+# --- Role assignments (the CI/CD SP holds Role Based Access Control Administrator on the RG)
 
 resource "azurerm_role_assignment" "uc_adls" {
   scope                = module.adls.id

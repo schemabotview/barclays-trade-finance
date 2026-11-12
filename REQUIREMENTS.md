@@ -77,19 +77,20 @@ limit 10.0m, utilisation 97%, headroom 0.3m, breach No.
 - **R7.4** Job failure email via `email_notifications.on_failure = var.alert_emails`; recipients must
   be configured.
 
-## 8. CI/CD — Jenkins + Terraform
+## 8. CI/CD — GitHub Actions + Terraform
 
 - **R8.1** Stack: Azure (ADLS Gen2, ADF, Key Vault), Databricks (Unity Catalog, Jobs, Delta),
-  Terraform for all infra, Jenkins for all deployments. No manual changes in any environment.
+  Terraform for all infra, GitHub Actions for all deployments. No manual changes in any environment.
 - **R8.2** Environments dev → test → prod, each with its own Terraform state (Azure Storage
   backend, blob-lease locking) and its own service principal.
 - **R8.3** Terraform owns: resource groups, ADLS containers, Key Vault, ADF (pipelines, linked
   services, SHIR registration), Databricks workspace, Unity Catalog schemas and grants, clusters,
   jobs (incl. `email_notifications`).
-- **R8.4** Jenkins pipeline: lint + unit tests (pytest on PySpark transforms) → `terraform fmt` /
+- **R8.4** Pipeline: lint + unit tests (pytest on PySpark transforms) → `terraform fmt` /
   `validate` → `plan` → manual approval (test, prod) → `apply` → deploy code → smoke run.
 - **R8.5** PRs run CI only (tests + `plan`, plan posted for review); merge to `main` promotes.
-- **R8.6** Secrets come from Jenkins credentials / Key Vault, never from the repo.
+- **R8.6** CI/CD authenticates to Azure with OIDC (federated credentials), no stored secret;
+  app secrets live in Key Vault, never in the repo.
 - **R8.7** Releases are tagged; rollback = redeploy the previous tag.
 
 ## 9. Recovery semantics

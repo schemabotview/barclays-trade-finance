@@ -18,7 +18,7 @@ terraform {
   }
 }
 
-# Auth: ARM_CLIENT_ID / ARM_CLIENT_SECRET / ARM_TENANT_ID / ARM_SUBSCRIPTION_ID in Jenkins,
+# Auth: OIDC in GitHub Actions (ARM_USE_OIDC + ARM_CLIENT_ID / ARM_TENANT_ID / ARM_SUBSCRIPTION_ID),
 # the az CLI login locally. Both providers read the same variables.
 provider "azurerm" {
   features {
