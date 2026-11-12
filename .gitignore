@@ -1,0 +1,12 @@
+.terraform/
+*.tfstate
+*.tfstate.*
+tfplan
+plan-*.txt
+.venv/
+reports/
+__pycache__/
+.databricks/
+
+# personal, not project material
+*.pdf
