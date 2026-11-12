@@ -1,11 +1,15 @@
-# Data Factory with a managed identity, linked services to ADLS and Key Vault, and a
-# self-hosted IR for on-prem TradeBook. The SHIR node is registered by hand with the auth key.
+# Data Factory with a managed identity and linked services to ADLS, Key Vault and the TradeBook
+# PostgreSQL source. Everything is in Azure, so all of them use the default Azure integration runtime.
 
 variable "name" { type = string }
 variable "resource_group_name" { type = string }
 variable "location" { type = string }
 variable "adls_dfs_endpoint" { type = string }
 variable "key_vault_id" { type = string }
+variable "postgres_fqdn" { type = string }
+variable "postgres_database" { type = string }
+variable "postgres_user" { type = string }
+variable "postgres_password_secret" { type = string }
 variable "tags" { type = map(string) }
 
 resource "azurerm_data_factory" "this" {
@@ -32,10 +36,31 @@ resource "azurerm_data_factory_linked_service_key_vault" "kv" {
   key_vault_id    = var.key_vault_id
 }
 
-resource "azurerm_data_factory_integration_runtime_self_hosted" "shir" {
-  name            = "shir-tradebook"
+# Connector version 2.0; `version` sits beside `type`, so it goes in additional_properties.
+resource "azurerm_data_factory_linked_custom_service" "tradebook" {
+  name            = "ls_tradebook_pg"
   data_factory_id = azurerm_data_factory.this.id
-  description     = "On-prem TradeBook PostgreSQL"
+  type            = "AzurePostgreSql"
+  description     = "TradeBook source (Azure Database for PostgreSQL Flexible Server)"
+  additional_properties = {
+    version = "2.0"
+  }
+  type_properties_json = jsonencode({
+    server             = var.postgres_fqdn
+    port               = 5432
+    database           = var.postgres_database
+    sslMode            = 3
+    authenticationType = "Basic"
+    username           = var.postgres_user
+    password = {
+      type       = "AzureKeyVaultSecret"
+      secretName = var.postgres_password_secret
+      store = {
+        referenceName = azurerm_data_factory_linked_service_key_vault.kv.name
+        type          = "LinkedServiceReference"
+      }
+    }
+  })
 }
 
 output "id" { value = azurerm_data_factory.this.id }

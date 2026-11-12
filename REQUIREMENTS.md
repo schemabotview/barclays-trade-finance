@@ -8,12 +8,17 @@ automation, orchestration, versioned publication.
 
 ## 1. Source (proposed)
 
+TradeBook is an Azure Database for PostgreSQL Flexible Server (assumed in Azure, not on-prem, to
+keep the build simple: no self-hosted integration runtime).
+
 - **R1.1** Extract LC deals + amendments from TradeBook PostgreSQL incrementally by watermark:
   `updated_at > old AND updated_at <= new`, where `new = max(updated_at)` at extraction start.
-- **R1.2** Save the new watermark only after the batch passes G1.
+- **R1.2** Save the new watermark only after the batch passes G1. The watermark is a JSON file in
+  ADLS, `landing/_control/lc_deals_watermark.json`: ADF reads it with a Lookup and rewrites it.
 - **R1.3** Extract reference files (counterparty → group mappings, group limits) by modified-time
   window or file manifest.
-- **R1.4** Use ADF Copy Activity, with a self-hosted integration runtime (SHIR) for on-prem access.
+- **R1.4** Use ADF Copy Activity on the Azure integration runtime (Azure Database for PostgreSQL
+  connector 2.0, password from Key Vault).
 - **R1.5** Land each batch in a stable path with a manifest, so a retry is safe.
 
 ## 2. Landing — ADLS (JSON / Parquet)
@@ -79,12 +84,12 @@ limit 10.0m, utilisation 97%, headroom 0.3m, breach No.
 
 ## 8. CI/CD — GitHub Actions + Terraform
 
-- **R8.1** Stack: Azure (ADLS Gen2, ADF, Key Vault), Databricks (Unity Catalog, Jobs, Delta),
+- **R8.1** Stack: Azure (ADLS Gen2, ADF, Key Vault, PostgreSQL Flexible Server), Databricks (Unity Catalog, Jobs, Delta),
   Terraform for all infra, GitHub Actions for all deployments. No manual changes in any environment.
 - **R8.2** Environments dev → test → prod, each with its own Terraform state (Azure Storage
   backend, blob-lease locking) and its own service principal.
-- **R8.3** Terraform owns: resource groups, ADLS containers, Key Vault, ADF (pipelines, linked
-  services, SHIR registration), Databricks workspace, Unity Catalog schemas and grants, clusters,
+- **R8.3** Terraform owns: resource groups, ADLS containers, Key Vault, the TradeBook PostgreSQL
+  server, ADF (pipelines, linked services), Databricks workspace, Unity Catalog schemas and grants, clusters,
   jobs (incl. `email_notifications`).
 - **R8.4** Pipeline: lint + unit tests (pytest on PySpark transforms) → `terraform fmt` /
   `validate` → `plan` → manual approval (test, prod) → `apply` → deploy code → smoke run.
