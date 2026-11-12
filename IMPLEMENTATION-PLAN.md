@@ -30,7 +30,7 @@ Identity and access (Terraform-managed unless noted):
 |---|---|---|
 | `sp-cicd-lcexp` ✅ (bootstrap; appId `0e0e7e2d-ecfd-480a-9329-01c0a2a9407e`; OIDC only, trusts `pull_request` + `environment:dev`) | Contributor + Role Based Access Control Administrator | `rg-lcexp-dev-uks` |
 | `sp-cicd-lcexp` ✅ (bootstrap) | Storage Blob Data Contributor | TF state storage |
-| access connector | Storage Blob Data Contributor | ADLS |
+| access connector | Storage Blob Data Contributor; Reader (UC checks it on the storage credential) | ADLS; the access connector itself |
 | ADF identity | Storage Blob Data Contributor, Key Vault Secrets User | ADLS, Key Vault |
 
 Cost guards: subscription budget alert, cluster auto-termination, `terraform destroy` of dev when idle

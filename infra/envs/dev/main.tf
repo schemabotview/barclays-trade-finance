@@ -69,6 +69,14 @@ resource "azurerm_role_assignment" "uc_adls" {
   principal_type       = "ServicePrincipal"
 }
 
+# UC's storage credential checks that the connector's identity can read the connector itself.
+resource "azurerm_role_assignment" "uc_connector" {
+  scope                = module.databricks.access_connector_id
+  role_definition_name = "Reader"
+  principal_id         = module.databricks.access_connector_principal_id
+  principal_type       = "ServicePrincipal"
+}
+
 resource "azurerm_role_assignment" "adf_adls" {
   scope                = module.adls.id
   role_definition_name = "Storage Blob Data Contributor"
@@ -85,8 +93,11 @@ resource "azurerm_role_assignment" "adf_kv" {
 
 # RBAC takes a minute to reach the data plane; UC validates the location on create.
 resource "time_sleep" "rbac" {
-  depends_on      = [azurerm_role_assignment.uc_adls]
   create_duration = "90s"
+  triggers = {
+    uc_adls      = azurerm_role_assignment.uc_adls.id
+    uc_connector = azurerm_role_assignment.uc_connector.id
+  }
 }
 
 # --- Databricks workspace contents
